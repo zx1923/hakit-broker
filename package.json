@@ -1,0 +1,38 @@
+{
+  "name": "hakit-broker",
+  "version": "1.0.0",
+  "description": "hakit broker for websocket and mqtt",
+  "main": "index.js",
+  "scripts": {
+    "build": "gulp",
+    "dev": "gulp dev"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zx1923/hakit-broker.git"
+  },
+  "author": "Sean",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/zx1923/hakit-broker/issues"
+  },
+  "homepage": "https://github.com/zx1923/hakit-broker#readme",
+  "dependencies": {
+    "aedes": "^0.46.0",
+    "aedes-server-factory": "^0.1.3",
+    "axios": "^0.21.1",
+    "chalk": "^4.1.1",
+    "silly-datetime": "^0.1.2",
+    "websocket-stream": "^5.5.2"
+  },
+  "devDependencies": {
+    "@types/axios": "^0.14.0",
+    "@types/node": "^15.12.2",
+    "gulp": "^4.0.2",
+    "gulp-clean": "^0.4.0",
+    "gulp-typescript": "^6.0.0-alpha.1",
+    "gulp-uglify": "^3.0.2",
+    "mqtt": "^4.2.6",
+    "typescript": "^4.3.2"
+  }
+}
