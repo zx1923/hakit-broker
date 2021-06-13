@@ -58,28 +58,30 @@ async function _mqAuthenticate(
 
   // 设备端
   if (verify.isDevice(client.id)) {
-    client.role = ClientRole.device;
-    client.did = client.id.slice(2);
     // 连接鉴权
     let authres = await conetxt.opts.authDeviceConnection(conetxt, client, username, password);
     if (!authres) {
       logger.warn(`Device auth connextion failed`);
       return callback(null, false);
     }
+    client.role = ClientRole.device;
+    client.did = client.id.slice(2);
+    return callback(null, true);
   }
 
   // 应用端
   if (verify.isUser(client.id)) {
-    client.role = ClientRole.user;
-    client.uid = username;
     let res = await conetxt.opts.authUserConnection(conetxt, client, username, password);
     if (!res) {
       logger.warn(`User application auth connextion failed`);
       return callback(null, false);
     }
+    client.role = ClientRole.user;
+    client.uid = username;
+    return callback(null, true);
   }
 
-  callback(null, true);
+  callback(null, false);
 }
 
 /**
@@ -113,9 +115,8 @@ function _mqAuthorizePublish(
 
   const conetxt: MqttServer = this;
 
-  logger.info(`topic <${packet.topic}> : onClientPublish callback`);
+  logger.info(`onClientPublish`, `topic <${packet.topic}>`);
   conetxt.opts.onClientPublish(conetxt, client, packet);
-  callback(null);
 }
 
 /**
@@ -222,6 +223,11 @@ class MqttServer {
     });
   }
 
+  /**
+   * 设置回调函数
+   * 
+   * @param options 
+   */
   setCallbackOptions(options: BrokerCallbacks) {
     this.opts = options;
   }
@@ -233,16 +239,24 @@ class MqttServer {
    * @param topic 话题
    * @param msgstr 消息
    */
-  sendToClient(clientId: string, topic: string, msgstr: string): void {
-    if (clientId === null) {
-      return this.superClient.publish(topic, msgstr);
-    }
+  sendToClient(clientId: string, topic: string, msgstr: string): boolean {
     if (this.isOnline(clientId)) {
       this.superClient.publish(topic, msgstr);
       logger.info(`Send to <${topic}> ready`);
-      return;
+      return true;
     }
-    logger.warn(`[${this.ws ? 'Socket' : 'Mqtt'}] Client <${clientId}> is not online`);
+    logger.warn(`[${this.ws ? 'Sock' : 'Mqtt'}] Client <${clientId}> is not online`);
+    return false;
+  }
+
+  /**
+   * 透传消息
+   * 
+   * @param topic 话题
+   * @param msgstr 消息字符串
+   */
+  transfer(topic: string, msgstr: string): void {
+    this.superClient.publish(topic, msgstr);
   }
 
   /**

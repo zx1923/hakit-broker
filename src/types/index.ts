@@ -39,7 +39,9 @@ interface accessTokenResponse {
 interface WxCloudFuncResponse {
   errcode: number,
   errmsg: string,
-  data: any
+  data: any,
+  matched: number,
+  modified: number,
 }
 
 export {

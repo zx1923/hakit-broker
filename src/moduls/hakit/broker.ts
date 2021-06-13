@@ -26,8 +26,11 @@ const wsServ = new MqttServer({
    * 通过sn获取设备列表
    * @param sn 设备SN，client.id
    */
- function _dbGetDeviceBindInfoBySn(sn: string) {
-  return wxCloud.dbQuery(`db.collection("devices").where({sn:"${sn}"}).get()`);
+function _dbGetDeviceBindInfoBySn(sn: string) {
+  const fields = JSON.stringify({
+    _openid: true,
+  });
+  return wxCloud.dbQuery(`db.collection("devices").where({sn:"${sn}"}).field(${fields}).get()`);
 }
 
 /**
@@ -36,7 +39,10 @@ const wsServ = new MqttServer({
  * @param openid 用户Openid，client.id
  */
 function _dbGetDevicesByOpenid(openid: string) {
-  return wxCloud.dbQuery(`db.collection("devices").where({_openid:"${openid}"}).get()`)
+  const fields = JSON.stringify({
+    sn: true,
+  });
+  return wxCloud.dbQuery(`db.collection("devices").where({_openid:"${openid}"}).field(${fields}).get()`)
 }
 
 /**
@@ -46,25 +52,21 @@ function _dbGetDevicesByOpenid(openid: string) {
  * @param sn 设备端ID
  */
 async function _resetMapData(openid: string, sn: string) {
+  logger.warn('_resetMapData', `openid: ${openid}, sn: ${sn}`);
   // user map device
   if (openid) {
     const res = await _dbGetDevicesByOpenid(openid);
-    if (res.errcode === 0 && res.data.length) {
-      return _setUserMapDevice(openid, res.data);
+    if (res.errcode === 0) {
+      return _setUserMapDevice(openid, res.data.length ? res.data : []);
     }
-    // 没有则置空
-    return _setUserMapDevice(openid, []);
   }
 
   // device map user
   if (sn) {
-    // let query = `db.collection("devices").where({sn:"${sn}"}).get()`;
-    // wxDbRequest("dbQuery", query).then(res => {
     const res = await _dbGetDeviceBindInfoBySn(sn);
-    if (res.errcode === 0 && res.data.lenght) {
-      return _setDeviceMapUser(sn, res.data);
+    if (res.errcode === 0) {
+      return _setDeviceMapUser(sn, res.data.length ? res.data : []);
     }
-    return _setDeviceMapUser(sn, []);
   }
 }
 
@@ -80,7 +82,7 @@ function _setUserMapDevice(openid: string, dbdata = []) {
     let line = JSON.parse(dbdata[i]);
     userMapDevice[openid].add(line.sn);
   }
-  console.log(userMapDevice);
+  // console.log(userMapDevice);
 }
 
 /**
@@ -95,24 +97,79 @@ function _setDeviceMapUser(sn: string, dbdata = []) {
     let line = JSON.parse(dbdata[i]);
     deviceMapUser[sn].add(line._openid);
   }
-  console.log(deviceMapUser);
+  // console.log(deviceMapUser);
+}
+
+/**
+ * 向指定通道server发送设备离线消息
+ * 
+ * @param context 上下文对象
+ * @param uid 应用端ID
+ * @param did 设备ID
+ */
+function _sendDeviceOfflineMsgUseContext(context: MqttServer, uid: string, did: string) {
+  const msgstr = JSON.stringify({
+    response: 'offline',
+    sn: did,
+  });
+  context.transfer(`/user/${uid}`, msgstr);
+}
+
+/**
+ * 广播设备离线消息
+ * 
+ * @param did 设备ID
+ */
+function _broadcastDeviceOfflineMsg(did: string) {
+  let users = deviceMapUser[did];
+  if (!users) {
+    return;
+  }
+  const msgstr = JSON.stringify({
+    response: 'offline',
+    sn: did,
+  });
+  for (let openid of users) {
+    mqServ.transfer(`/user/${openid}`, msgstr);
+    wsServ.transfer(`/user/${openid}`, msgstr);
+  }
+}
+
+/**
+ * 发送广播消息前先检查设备是否在线
+ * 
+ * @param did 设备ID
+ */
+function _getDeviceAvailableServers( did: string): Array<MqttServer> {
+  // 如果设备不在线，则直接回复应用端
+  return [mqServ, wsServ].filter(serv => {
+    return serv.isOnline(`D:${did}`);
+  });
 }
 
 /**
  * 透传消息给客户端
  * 
+ * @param context 上下文对象
  * @param uid 客户端id，to devices
- * @param topic 话题
  * @param payload 数据
  */
-function _broadcastToDevices(uid: string = null, msgstr: string) {
+function _broadcastToDevicesByUid(context: MqttServer, uid: string = null, msgstr: string) {
   let devices = userMapDevice[uid];
   if (!devices) {
     return;
   }
   for (let sn of devices) {
-    mqServ.sendToClient(`D:${sn}`, `/device/${sn}`, msgstr);
-    wsServ.sendToClient(`D:${sn}`, `/device/${sn}`, msgstr);
+    // 在线检测
+    const onlineInServs = _getDeviceAvailableServers(sn);
+    if (!onlineInServs.length) {
+      // 发送离线消息
+      _sendDeviceOfflineMsgUseContext(context, uid, sn);
+      continue;
+    }
+    onlineInServs.forEach(serv => {
+      serv.transfer(`/device/${sn}`, msgstr);
+    });
   }
 }
 
@@ -129,8 +186,8 @@ function _broadcastToUsersBySn(did: string = null, msgstr: string) {
     return;
   }
   for (let openid of users) {
-    mqServ.sendToClient(null, `/user/${openid}`, msgstr);
-    wsServ.sendToClient(null, `/user/${openid}`, msgstr);
+    mqServ.transfer(`/user/${openid}`, msgstr);
+    wsServ.transfer(`/user/${openid}`, msgstr);
   }
 }
 
@@ -143,24 +200,25 @@ function _broadcastToUsersBySn(did: string = null, msgstr: string) {
  */
 async function authDeviceConnection(
   conetxt: MqttServer,
-  client: MqttClient, 
-  sn: string = null, 
+  client: MqttClient,
+  sn: string = null,
   secret: string = null): Promise<boolean> {
-  
-    // 非空
+
+  // 非空
   if (!sn || !secret) {
     return Promise.resolve(false);
   }
-  
+
   // 不可重复连接
   if (mqServ.isOnline(client.id) || wsServ.isOnline(client.id)) {
     return Promise.resolve(false);
   }
 
-  // 验证设备是否在数据库有备案
+  // 验证设备是否可以被激活
   let query = `db.collection("devices").where({sn:"${sn}",secret:"${secret}"}).update({data:{activated:true}})`;
   const res = await wxCloud.dbUpdate(query);
-  if (!res || res.errcode !== 0) {
+  // matched 必须大于0，表示有匹配
+  if (!res || res.errcode !== 0 || !res.matched) {
     return Promise.resolve(false);
   }
 
@@ -168,10 +226,11 @@ async function authDeviceConnection(
   let bindInfo = await _dbGetDeviceBindInfoBySn(sn);
   if (bindInfo && bindInfo.errcode === 0) {
     // 生成 device -> user 映射关系
-    _setDeviceMapUser(sn, bindInfo.data);
+    _setDeviceMapUser(sn, bindInfo.data.length ? bindInfo.data : []);
+    return Promise.resolve(true);
   }
-  
-  return Promise.resolve(true);
+
+  return Promise.resolve(false);
 }
 
 /**
@@ -182,11 +241,11 @@ async function authDeviceConnection(
  * @param openid 应用端的openid
  */
 async function authUserConnection(
-  context: MqttServer, 
-  client: MqttClient, 
+  context: MqttServer,
+  client: MqttClient,
   openid: string,
-  password: string = null): Promise<boolean>  {
-  
+  password: string = null): Promise<boolean> {
+
   // 非空
   if (!openid) {
     return Promise.resolve(false);
@@ -201,10 +260,11 @@ async function authUserConnection(
   const res = await _dbGetDevicesByOpenid(openid);
   if (res && res.errcode === 0) {
     // 设置 user -> device 映射关系
-    _setUserMapDevice(openid, res.data);
+    _setUserMapDevice(openid, res.data.length ? res.data : []);
+    return Promise.resolve(true);
   }
 
-  return Promise.resolve(true);
+  return Promise.resolve(false);
 }
 
 /**
@@ -213,8 +273,8 @@ async function authUserConnection(
  * @param context 上下文对象
  * @param client 客户端实例
  */
-function onClientConnnect (
-  context: MqttServer, 
+function onClientConnnect(
+  context: MqttServer,
   client: MqttClient) {
   logger.info(`onClientConnnect trigged`);
 }
@@ -226,29 +286,39 @@ function onClientConnnect (
  * @param client 客户端对象
  * @param packet 数据包，{topic, payload}
  */
-function onClientPublish (
+function onClientPublish(
   context: MqttServer,
-  client: MqttClient, 
+  client: MqttClient,
   packet: MqttPacket) {
-  
+
   // 应用端的广播数据
   if (client.role === ClientRole.user) {
+    
     // 广播
     if (packet.topic === `/broadcast/${client.uid}`) {
-      return _broadcastToDevices(client.uid, packet.payload.toString());
+      logger.warn('one to broadcast', packet.topic);
+      return _broadcastToDevicesByUid(context, client.uid, packet.payload.toString());
     }
 
-    // 点对点
+    // 点对点，发送消息给设备 /device/did
     if (packet.topic.indexOf("/device/") === 0) {
+      logger.warn('one to one', packet.topic);
       let sn = packet.topic.split('/device/')[1];
-      mqServ.sendToClient(`D:${sn}`, packet.topic, packet.payload.toString());
-      wsServ.sendToClient(`D:${sn}`, packet.topic, packet.payload.toString());
+      // 获取在线的 serv 实例
+      const onlineInServs = _getDeviceAvailableServers(sn);
+      if (!onlineInServs.length && client.role === ClientRole.user) {
+        return _broadcastDeviceOfflineMsg(sn);
+      }
+      onlineInServs.forEach(serv => {
+        serv.transfer(packet.topic, packet.payload.toString())
+      });
       return;
     }
 
     // 映射更新
     if (packet.topic === "/datamap/update") {
       let mapKeys = JSON.parse(packet.payload.toString());
+      logger.warn(`</datamap/update>`, `reset device mapper width ${mapKeys.openid} & ${mapKeys.sn}`);
       return _resetMapData(mapKeys.openid, mapKeys.sn);
     }
   }
@@ -265,15 +335,11 @@ function onClientPublish (
  * @param client 客户端实例
  */
 function onClientDisconnect(
-  context: MqttServer, 
+  context: MqttServer,
   client: MqttClient) {
   // 设备端开，则通知 user app 设备下线
   if (client.role === ClientRole.device) {
-    const strmsg = JSON.stringify({
-      response: 'offline', 
-      sn: client.did 
-    });
-    _broadcastToUsersBySn(client.did, strmsg);
+    _broadcastDeviceOfflineMsg(client.did);
   }
 }
 
@@ -281,22 +347,17 @@ function onClientDisconnect(
  * 启动服务
  */
 async function start(): Promise<void> {
-  mqServ.setCallbackOptions({
+  const options = {
     authDeviceConnection,
     authUserConnection,
     onClientConnnect,
     onClientPublish,
     onClientDisconnect
-  });
+  };
 
-  wsServ.setCallbackOptions({
-    authDeviceConnection,
-    authUserConnection,
-    onClientConnnect,
-    onClientPublish,
-    onClientDisconnect
-  });
-  
+  mqServ.setCallbackOptions(options);
+  wsServ.setCallbackOptions(options);
+
   await mqServ.startBroker();
   await wsServ.startBroker();
 }
