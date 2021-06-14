@@ -296,13 +296,11 @@ function onClientPublish(
     
     // 广播
     if (packet.topic === `/broadcast/${client.uid}`) {
-      logger.warn('one to broadcast', packet.topic);
       return _broadcastToDevicesByUid(context, client.uid, packet.payload.toString());
     }
 
     // 点对点，发送消息给设备 /device/did
     if (packet.topic.indexOf("/device/") === 0) {
-      logger.warn('one to one', packet.topic);
       let sn = packet.topic.split('/device/')[1];
       // 获取在线的 serv 实例
       const onlineInServs = _getDeviceAvailableServers(sn);
