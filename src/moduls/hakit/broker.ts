@@ -52,7 +52,6 @@ function _dbGetDevicesByOpenid(openid: string) {
  * @param sn 设备端ID
  */
 async function _resetMapData(openid: string, sn: string) {
-  logger.warn('_resetMapData', `openid: ${openid}, sn: ${sn}`);
   // user map device
   if (openid) {
     const res = await _dbGetDevicesByOpenid(openid);
@@ -316,7 +315,6 @@ function onClientPublish(
     // 映射更新
     if (packet.topic === "/datamap/update") {
       let mapKeys = JSON.parse(packet.payload.toString());
-      logger.warn(`</datamap/update>`, `reset device mapper width ${mapKeys.openid} & ${mapKeys.sn}`);
       return _resetMapData(mapKeys.openid, mapKeys.sn);
     }
   }
